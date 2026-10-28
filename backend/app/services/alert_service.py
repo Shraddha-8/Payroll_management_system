@@ -1,12 +1,28 @@
+import os
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
+
 from app.models.payroll import Payroll
 from app.models.salary_structure import SalaryStructure
 
 
-SALARY_INCREASE_THRESHOLD = Decimal("10.00")
+# ============================================================
+# CONFIGURABLE ALERT THRESHOLDS
+# ============================================================
 
+SALARY_INCREASE_THRESHOLD = Decimal(
+    os.getenv("SALARY_INCREASE_THRESHOLD", "10.00")
+)
+
+PAYROLL_CHANGE_THRESHOLD = Decimal(
+    os.getenv("PAYROLL_CHANGE_THRESHOLD", "10.00")
+)
+
+
+# ============================================================
+# SALARY INCREASE ALERT
+# ============================================================
 
 def check_salary_increase_alert(
     db: Session,
@@ -19,7 +35,9 @@ def check_salary_increase_alert(
         .filter(
             SalaryStructure.employee_id == employee_id,
         )
-        .order_by(SalaryStructure.effective_from.desc())
+        .order_by(
+            SalaryStructure.effective_from.desc()
+        )
     )
 
     if current_salary_structure_id is not None:
@@ -29,11 +47,17 @@ def check_salary_increase_alert(
 
     previous_salary = query.first()
 
-    if not previous_salary or previous_salary.basic_salary == 0:
+    if (
+        not previous_salary
+        or previous_salary.basic_salary == 0
+    ):
         return None
 
     increase_percentage = (
-        (new_salary - previous_salary.basic_salary)
+        (
+            new_salary
+            - previous_salary.basic_salary
+        )
         / previous_salary.basic_salary
     ) * Decimal("100")
 
@@ -47,14 +71,15 @@ def check_salary_increase_alert(
             "increase_percentage": increase_percentage,
             "previous_salary": previous_salary.basic_salary,
             "new_salary": new_salary,
+            "threshold": SALARY_INCREASE_THRESHOLD,
         }
 
     return None
-from app.models.payroll import Payroll
 
 
-PAYROLL_CHANGE_THRESHOLD = Decimal("10.00")
-
+# ============================================================
+# PAYROLL MONTH-OVER-MONTH CHANGE ALERT
+# ============================================================
 
 def check_payroll_change_alert(
     db: Session,
@@ -69,15 +94,23 @@ def check_payroll_change_alert(
             Payroll.payroll_month < current_payroll_month,
             Payroll.status == "Finalized",
         )
-        .order_by(Payroll.payroll_month.desc())
+        .order_by(
+            Payroll.payroll_month.desc()
+        )
         .first()
     )
 
-    if not previous_payroll or previous_payroll.net_salary == 0:
+    if (
+        not previous_payroll
+        or previous_payroll.net_salary == 0
+    ):
         return None
 
     change_percentage = (
-        (current_net_salary - previous_payroll.net_salary)
+        (
+            current_net_salary
+            - previous_payroll.net_salary
+        )
         / previous_payroll.net_salary
     ) * Decimal("100")
 
@@ -92,6 +125,7 @@ def check_payroll_change_alert(
             "previous_net_salary": previous_payroll.net_salary,
             "current_net_salary": current_net_salary,
             "previous_payroll_month": previous_payroll.payroll_month,
+            "threshold": PAYROLL_CHANGE_THRESHOLD,
         }
 
     return None

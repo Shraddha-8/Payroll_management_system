@@ -12,12 +12,21 @@ def create_user():
         email = input("User email: ").strip()
         name = input("User name: ").strip()
         password = getpass("User password: ")
-        role = input("User role (Admin/HR/Employee): ").strip()
+        role = input(
+            "User role (Admin/HR/Payroll Manager/Employee): "
+        ).strip()
 
-        allowed_roles = ["Admin", "HR", "Employee"]
+        allowed_roles = [
+            "Admin",
+            "HR",
+            "Payroll Manager",
+            "Employee",
+        ]
 
         if role not in allowed_roles:
-            print("Invalid role. Choose Admin, HR, or Employee.")
+            print(
+                "Invalid role. Choose Admin, HR, Payroll Manager, or Employee."
+            )
             return
 
         existing_user = (
