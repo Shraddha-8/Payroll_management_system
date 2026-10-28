@@ -1,5 +1,5 @@
 from calendar import monthrange
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy.orm import Session
@@ -22,7 +22,8 @@ def calculate_payroll(
     - Absent attendance = unpaid day
     - Approved leave = unpaid day
     - Same date is counted only once
-    - Missing attendance is flagged
+    - Missing attendance is checked only for working days (Monday-Friday)
+    - Missing attendance is returned as an exception
     """
 
     month_start = payroll_month.replace(day=1)
@@ -92,6 +93,11 @@ def calculate_payroll(
         .all()
     )
 
+    attendance_by_date = {
+        attendance.attendance_date: attendance
+        for attendance in attendance_records
+    }
+
     absent_dates = set()
 
     for attendance in attendance_records:
@@ -130,9 +136,6 @@ def calculate_payroll(
 
         while current_date <= leave_end:
             approved_leave_dates.add(current_date)
-
-            from datetime import timedelta
-
             current_date += timedelta(days=1)
 
     # -------------------------------------------------
@@ -148,23 +151,37 @@ def calculate_payroll(
     # -------------------------------------------------
     # 5. Detect missing attendance
     # -------------------------------------------------
+    #
+    # Monday-Friday are treated as working days.
+    # Weekends are not considered missing attendance.
+    #
+    # Approved leave is also not considered missing.
+    # -------------------------------------------------
 
-    recorded_dates = {
-        attendance.attendance_date
-        for attendance in attendance_records
-    }
+    recorded_dates = set(attendance_by_date.keys())
 
     missing_attendance_dates = []
 
     current_date = month_start
 
     while current_date <= month_end:
-        if current_date not in recorded_dates:
+
+        is_working_day = current_date.weekday() < 5
+
+        has_attendance = current_date in recorded_dates
+
+        is_approved_leave = (
+            current_date in approved_leave_dates
+        )
+
+        if (
+            is_working_day
+            and not has_attendance
+            and not is_approved_leave
+        ):
             missing_attendance_dates.append(
                 current_date
             )
-
-        from datetime import timedelta
 
         current_date += timedelta(days=1)
 

@@ -1,29 +1,44 @@
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies.auth import get_current_user
 from app.dependencies.roles import require_role
+
 from app.models.employee import Employee
 from app.models.payroll import Payroll
 from app.models.payslip import Payslip
 from app.models.user import User
+
+from app.services.notification import create_notification
 from app.services.payslip_generator import generate_payslip_pdf
-from app.dependencies.auth import get_current_user
-from fastapi.responses import FileResponse
 
 
-router = APIRouter(prefix="/payslips", tags=["Payslips"])
+router = APIRouter(
+    prefix="/payslips",
+    tags=["Payslips"]
+)
 
+
+# ============================================================
+# GENERATE PAYSLIP
+# ============================================================
 
 @router.post("/{payroll_id}")
 def generate_payslip(
     payroll_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("Admin", "HR")),
+    current_user: User = Depends(
+        require_role("Admin", "HR")
+    ),
 ):
+    # --------------------------------------------------------
     # 1. Find payroll
+    # --------------------------------------------------------
+
     payroll = (
         db.query(Payroll)
         .filter(Payroll.id == payroll_id)
@@ -36,17 +51,28 @@ def generate_payslip(
             detail="Payroll not found"
         )
 
-    # 2. Payslip can only be generated for finalized payroll
+    # --------------------------------------------------------
+    # 2. Payslip only for finalized payroll
+    # --------------------------------------------------------
+
     if payroll.status != "Finalized":
         raise HTTPException(
             status_code=400,
-            detail="Payslip can only be generated for finalized payroll"
+            detail=(
+                "Payslip can only be generated "
+                "for finalized payroll"
+            )
         )
 
-    # 3. Check whether payslip already exists
+    # --------------------------------------------------------
+    # 3. Prevent duplicate payslip
+    # --------------------------------------------------------
+
     existing_payslip = (
         db.query(Payslip)
-        .filter(Payslip.payroll_id == payroll_id)
+        .filter(
+            Payslip.payroll_id == payroll_id
+        )
         .first()
     )
 
@@ -56,10 +82,15 @@ def generate_payslip(
             detail="Payslip already exists for this payroll"
         )
 
+    # --------------------------------------------------------
     # 4. Find employee
+    # --------------------------------------------------------
+
     employee = (
         db.query(Employee)
-        .filter(Employee.id == payroll.employee_id)
+        .filter(
+            Employee.id == payroll.employee_id
+        )
         .first()
     )
 
@@ -69,7 +100,10 @@ def generate_payslip(
             detail="Employee not found"
         )
 
+    # --------------------------------------------------------
     # 5. Create PDF directory
+    # --------------------------------------------------------
+
     pdf_directory = Path("generated_payslips")
     pdf_directory.mkdir(exist_ok=True)
 
@@ -78,14 +112,20 @@ def generate_payslip(
         / f"payslip_{payroll.id}_{employee.employee_id}.pdf"
     )
 
+    # --------------------------------------------------------
     # 6. Generate PDF
+    # --------------------------------------------------------
+
     generate_payslip_pdf(
         payroll=payroll,
         employee=employee,
         output_path=pdf_path,
     )
 
+    # --------------------------------------------------------
     # 7. Save payslip record
+    # --------------------------------------------------------
+
     payslip = Payslip(
         payroll_id=payroll.id,
         employee_id=employee.id,
@@ -93,6 +133,34 @@ def generate_payslip(
     )
 
     db.add(payslip)
+
+    # Flush so payslip.id is available
+    db.flush()
+
+    # --------------------------------------------------------
+    # 8. Notify employee
+    # --------------------------------------------------------
+
+    if employee.user_id:
+        create_notification(
+            db=db,
+            user_id=employee.user_id,
+            title="Payslip Available",
+            message=(
+                f"Your payslip for "
+                f"{payroll.payroll_month} "
+                f"is now available for download."
+            ),
+            notification_key=(
+                f"payslip_{payroll.id}"
+                f"_available_user_{employee.user_id}"
+            ),
+        )
+
+    # --------------------------------------------------------
+    # 9. Commit payslip + notification together
+    # --------------------------------------------------------
+
     db.commit()
     db.refresh(payslip)
 
@@ -103,6 +171,12 @@ def generate_payslip(
         "employee_id": employee.id,
         "file_path": payslip.file_path,
     }
+
+
+# ============================================================
+# GET MY PAYSLIPS
+# ============================================================
+
 @router.get("/my")
 def get_my_payslips(
     db: Session = Depends(get_db),
@@ -110,7 +184,9 @@ def get_my_payslips(
 ):
     employee = (
         db.query(Employee)
-        .filter(Employee.user_id == current_user.id)
+        .filter(
+            Employee.user_id == current_user.id
+        )
         .first()
     )
 
@@ -122,22 +198,35 @@ def get_my_payslips(
 
     payslips = (
         db.query(Payslip)
-        .filter(Payslip.employee_id == employee.id)
+        .filter(
+            Payslip.employee_id == employee.id
+        )
         .order_by(Payslip.id.desc())
         .all()
     )
 
     return payslips
+
+
+# ============================================================
+# DOWNLOAD MY PAYSLIP
+# ============================================================
+
 @router.get("/{payslip_id}/download")
 def download_my_payslip(
     payslip_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # Find the employee linked to the logged-in user
+    # --------------------------------------------------------
+    # Find employee linked to logged-in user
+    # --------------------------------------------------------
+
     employee = (
         db.query(Employee)
-        .filter(Employee.user_id == current_user.id)
+        .filter(
+            Employee.user_id == current_user.id
+        )
         .first()
     )
 
@@ -147,7 +236,10 @@ def download_my_payslip(
             detail="Employee profile not found"
         )
 
-    # Find the payslip and make sure it belongs to this employee
+    # --------------------------------------------------------
+    # Find payslip belonging to employee
+    # --------------------------------------------------------
+
     payslip = (
         db.query(Payslip)
         .filter(
@@ -163,7 +255,10 @@ def download_my_payslip(
             detail="Payslip not found"
         )
 
-    # Check that the PDF file actually exists
+    # --------------------------------------------------------
+    # Check PDF exists
+    # --------------------------------------------------------
+
     pdf_path = Path(payslip.file_path)
 
     if not pdf_path.exists():
@@ -172,7 +267,10 @@ def download_my_payslip(
             detail="Payslip PDF file not found"
         )
 
-    # Return the PDF
+    # --------------------------------------------------------
+    # Return PDF
+    # --------------------------------------------------------
+
     return FileResponse(
         path=str(pdf_path),
         media_type="application/pdf",

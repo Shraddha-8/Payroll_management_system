@@ -2,23 +2,26 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from app.database import get_db
+from app.dependencies.auth import get_current_user
 from app.dependencies.roles import require_role
+
 from app.models.employee import Employee
 from app.models.payroll import Payroll
 from app.models.user import User
-from app.schemas import payroll
+
 from app.schemas.payroll import (
     PayrollCreate,
     PayrollResponse,
 )
+
 from app.services.payroll_calculator import calculate_payroll
 from app.services.audit import create_audit_log
 from app.services.notification import create_notification
 from app.services.alert_service import check_payroll_change_alert
 from app.services.transaction import commit_transaction
-from sqlalchemy.exc import IntegrityError
 
 
 router = APIRouter(
@@ -40,10 +43,14 @@ def create_payroll(
     payroll_data: PayrollCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(
-        require_role("Admin", "HR")
+        require_role("Admin", "HR", "Payroll Manager")
     )
 ):
+
+    # --------------------------------------------------------
     # 1. Check employee exists
+    # --------------------------------------------------------
+
     employee = (
         db.query(Employee)
         .filter(
@@ -57,13 +64,17 @@ def create_payroll(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Employee not found"
         )
+
     if not employee.is_active:
         raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail="Cannot create payroll for an inactive employee"
-    )
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot create payroll for an inactive employee"
+        )
 
+    # --------------------------------------------------------
     # 2. Prevent duplicate payroll
+    # --------------------------------------------------------
+
     existing_payroll = (
         db.query(Payroll)
         .filter(
@@ -79,7 +90,10 @@ def create_payroll(
             detail="Payroll already exists for this employee and month"
         )
 
+    # --------------------------------------------------------
     # 3. Calculate payroll
+    # --------------------------------------------------------
+
     try:
         calculation = calculate_payroll(
             db=db,
@@ -93,7 +107,10 @@ def create_payroll(
             detail=str(error)
         )
 
+    # --------------------------------------------------------
     # 4. Create payroll record
+    # --------------------------------------------------------
+
     payroll = Payroll(
         employee_id=payroll_data.employee_id,
         payroll_month=payroll_data.payroll_month,
@@ -118,7 +135,10 @@ def create_payroll(
     # Flush so payroll.id is generated
     db.flush()
 
+    # --------------------------------------------------------
     # 5. Create audit log
+    # --------------------------------------------------------
+
     create_audit_log(
         db=db,
         user_id=current_user.id,
@@ -132,7 +152,10 @@ def create_payroll(
         ),
     )
 
+    # --------------------------------------------------------
     # 6. Commit payroll + audit log together
+    # --------------------------------------------------------
+
     db.commit()
     db.refresh(payroll)
 
@@ -153,9 +176,10 @@ def get_payrolls(
     payroll_status: str | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(
-        require_role("Admin", "HR")
+        require_role("Admin", "HR", "Payroll Manager")
     )
 ):
+
     query = db.query(Payroll)
 
     if employee_id:
@@ -190,9 +214,10 @@ def submit_payroll(
     payroll_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(
-        require_role("Admin", "HR")
+        require_role("Admin", "HR", "Payroll Manager")
     )
 ):
+
     payroll = (
         db.query(Payroll)
         .filter(Payroll.id == payroll_id)
@@ -201,19 +226,97 @@ def submit_payroll(
 
     if not payroll:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Payroll not found"
         )
 
     if payroll.status != "Calculated":
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Only calculated payroll can be submitted for approval"
         )
 
+    # --------------------------------------------------------
+    # Check attendance exceptions before approval
+    # --------------------------------------------------------
+
+    try:
+        calculation = calculate_payroll(
+            db=db,
+            employee_id=payroll.employee_id,
+            payroll_month=payroll.payroll_month,
+        )
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error)
+        )
+
+    missing_attendance_dates = calculation.get(
+        "missing_attendance_dates",
+        []
+    )
+
+    if missing_attendance_dates:
+
+        formatted_dates = ", ".join(
+            str(attendance_date)
+            for attendance_date in missing_attendance_dates
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Payroll cannot be submitted for approval because "
+                "attendance is missing for the following working "
+                f"days: {formatted_dates}"
+            )
+        )
+
+    # --------------------------------------------------------
+    # Move payroll to Pending Approval
+    # --------------------------------------------------------
+
     payroll.status = "Pending Approval"
 
+    # --------------------------------------------------------
+    # Notify active approvers
+    # --------------------------------------------------------
+
+    approver_users = (
+        db.query(User)
+        .filter(
+            User.role.in_(
+                ["Admin", "HR", "Payroll Manager"]
+            ),
+            User.is_active == True,
+            User.id != current_user.id
+        )
+        .all()
+    )
+
+    for user in approver_users:
+        create_notification(
+            db=db,
+            user_id=user.id,
+            title="Payroll Pending Approval",
+            message=(
+                f"Payroll for employee "
+                f"{payroll.employee_id} "
+                f"for {payroll.payroll_month} "
+                f"is pending approval."
+            ),
+            notification_key=(
+                f"payroll_{payroll.id}"
+                f"_pending_approval_user_{user.id}"
+            ),
+        )
+
+    # --------------------------------------------------------
     # Audit log
+    # --------------------------------------------------------
+
     create_audit_log(
         db=db,
         user_id=current_user.id,
@@ -222,6 +325,10 @@ def submit_payroll(
         entity_id=payroll.id,
         details="Payroll submitted for approval",
     )
+
+    # --------------------------------------------------------
+    # Commit payroll + notifications + audit
+    # --------------------------------------------------------
 
     db.commit()
     db.refresh(payroll)
@@ -243,9 +350,10 @@ def decide_payroll(
     rejection_reason: str | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(
-        require_role("Admin", "HR")
+        require_role("Admin", "HR", "Payroll Manager")
     )
 ):
+
     payroll = (
         db.query(Payroll)
         .filter(Payroll.id == payroll_id)
@@ -254,25 +362,25 @@ def decide_payroll(
 
     if not payroll:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Payroll not found"
         )
 
     if payroll.status != "Pending Approval":
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Only pending payroll can be approved or rejected"
         )
 
     if decision not in ["Approved", "Rejected"]:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Decision must be Approved or Rejected"
         )
 
     if decision == "Rejected" and not rejection_reason:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Rejection reason is required"
         )
 
@@ -304,7 +412,6 @@ def decide_payroll(
         action = "APPROVE"
         details = "Payroll approved"
 
-        # Send notification to employee
         if employee and employee.user_id:
             create_notification(
                 db=db,
@@ -312,19 +419,24 @@ def decide_payroll(
                 title="Payroll Approved",
                 message=(
                     f"Your payroll for "
-                    f"{payroll.payroll_month} has been approved."
+                    f"{payroll.payroll_month} "
+                    f"has been approved."
+                ),
+                notification_key=(
+                    f"payroll_{payroll.id}"
+                    f"_approved_user_{employee.user_id}"
                 ),
             )
 
     else:
 
         action = "REJECT"
+
         details = (
             f"Payroll rejected. "
             f"Reason: {rejection_reason}"
         )
 
-        # Send notification to employee
         if employee and employee.user_id:
             create_notification(
                 db=db,
@@ -332,12 +444,20 @@ def decide_payroll(
                 title="Payroll Rejected",
                 message=(
                     f"Your payroll for "
-                    f"{payroll.payroll_month} has been rejected. "
+                    f"{payroll.payroll_month} "
+                    f"has been rejected. "
                     f"Reason: {rejection_reason}"
+                ),
+                notification_key=(
+                    f"payroll_{payroll.id}"
+                    f"_rejected_user_{employee.user_id}"
                 ),
             )
 
+    # --------------------------------------------------------
     # Create audit log
+    # --------------------------------------------------------
+
     create_audit_log(
         db=db,
         user_id=current_user.id,
@@ -347,7 +467,10 @@ def decide_payroll(
         details=details,
     )
 
-    # Commit payroll + notification + audit log together
+    # --------------------------------------------------------
+    # Commit payroll + notification + audit
+    # --------------------------------------------------------
+
     db.commit()
     db.refresh(payroll)
 
@@ -366,9 +489,10 @@ def finalize_payroll(
     payroll_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(
-        require_role("Admin", "HR")
+        require_role("Admin", "HR", "Payroll Manager")
     )
 ):
+
     payroll = (
         db.query(Payroll)
         .filter(Payroll.id == payroll_id)
@@ -377,19 +501,20 @@ def finalize_payroll(
 
     if not payroll:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Payroll not found"
         )
 
     if payroll.status != "Approved":
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Only approved payroll can be finalized"
         )
 
     # --------------------------------------------------------
     # Check month-over-month payroll change
     # --------------------------------------------------------
+
     payroll_alert = check_payroll_change_alert(
         db=db,
         employee_id=payroll.employee_id,
@@ -403,12 +528,20 @@ def finalize_payroll(
     # --------------------------------------------------------
     # Create notification for significant salary change
     # --------------------------------------------------------
+
     if payroll_alert:
+
         employee = (
             db.query(Employee)
-            .filter(Employee.id == payroll.employee_id)
+            .filter(
+                Employee.id == payroll.employee_id
+            )
             .first()
         )
+
+        # ----------------------------------------------------
+        # Notify employee
+        # ----------------------------------------------------
 
         if employee and employee.user_id:
             create_notification(
@@ -418,15 +551,23 @@ def finalize_payroll(
                 message=(
                     f"Your net salary changed by "
                     f"{payroll_alert['change_percentage']}% "
-                    f"compared with the previous finalized payroll. "
+                    f"compared with the previous finalized "
+                    f"payroll. "
                     f"Previous: ₹"
                     f"{payroll_alert['previous_net_salary']}. "
                     f"Current: ₹"
                     f"{payroll_alert['current_net_salary']}."
                 ),
+                notification_key=(
+                    f"payroll_{payroll.id}"
+                    f"_change_alert_user_{employee.user_id}"
+                ),
             )
 
-        # Also notify active Admin and HR users
+        # ----------------------------------------------------
+        # Notify active Admin and HR users
+        # ----------------------------------------------------
+
         hr_admin_users = (
             db.query(User)
             .filter(
@@ -444,14 +585,19 @@ def finalize_payroll(
                 message=(
                     f"Employee {payroll.employee_id} has a "
                     f"{payroll_alert['change_percentage']}% "
-                    f"change in net salary compared with the "
-                    f"previous finalized payroll."
+                    f"change in net salary compared with "
+                    f"the previous finalized payroll."
+                ),
+                notification_key=(
+                    f"payroll_{payroll.id}"
+                    f"_change_alert_user_{user.id}"
                 ),
             )
 
     # --------------------------------------------------------
     # Audit log
     # --------------------------------------------------------
+
     create_audit_log(
         db=db,
         user_id=current_user.id,
@@ -461,15 +607,24 @@ def finalize_payroll(
         details="Payroll finalized",
     )
 
+    # --------------------------------------------------------
     # Commit payroll + notifications + audit together
+    # --------------------------------------------------------
+
     try:
         commit_transaction(db)
+
     except IntegrityError:
         db.rollback()
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail="Payroll finalization failed due to a database conflict"
-    )
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Payroll finalization failed due to "
+                "a database conflict"
+            )
+        )
 
     db.refresh(payroll)
+
     return payroll

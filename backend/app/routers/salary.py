@@ -3,15 +3,23 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies.roles import require_role
+
 from app.models.salary_structure import SalaryStructure
 from app.models.employee import Employee
 from app.models.user import User
+
 from app.schemas.salary import (
     SalaryStructureCreate,
     SalaryStructureResponse,
 )
-from app.services.alert_service import check_salary_increase_alert
-from app.services.notification import create_notification
+
+from app.services.alert_service import (
+    check_salary_increase_alert,
+)
+
+from app.services.notification import (
+    create_notification,
+)
 
 
 router = APIRouter(
@@ -19,6 +27,10 @@ router = APIRouter(
     tags=["Salary Structures"]
 )
 
+
+# ============================================================
+# CREATE SALARY STRUCTURE
+# ============================================================
 
 @router.post(
     "/",
@@ -28,11 +40,23 @@ router = APIRouter(
 def create_salary_structure(
     salary_data: SalaryStructureCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("Admin", "HR"))
+    current_user: User = Depends(
+        require_role(
+            "Admin",
+            "HR",
+            "Payroll Manager"
+        )
+    )
 ):
+    # --------------------------------------------------------
+    # 1. Check employee
+    # --------------------------------------------------------
+
     employee = (
         db.query(Employee)
-        .filter(Employee.id == salary_data.employee_id)
+        .filter(
+            Employee.id == salary_data.employee_id
+        )
         .first()
     )
 
@@ -41,6 +65,10 @@ def create_salary_structure(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Employee not found"
         )
+
+    # --------------------------------------------------------
+    # 2. Create salary structure
+    # --------------------------------------------------------
 
     salary_structure = SalaryStructure(
         employee_id=salary_data.employee_id,
@@ -53,11 +81,16 @@ def create_salary_structure(
     )
 
     db.add(salary_structure)
+
     db.commit()
     db.refresh(salary_structure)
 
     return salary_structure
 
+
+# ============================================================
+# GET SALARY STRUCTURES
+# ============================================================
 
 @router.get(
     "/",
@@ -66,7 +99,13 @@ def create_salary_structure(
 def get_salary_structures(
     employee_id: int | None = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("Admin", "HR"))
+    current_user: User = Depends(
+        require_role(
+            "Admin",
+            "HR",
+            "Payroll Manager"
+        )
+    )
 ):
     query = db.query(SalaryStructure)
 
@@ -80,6 +119,10 @@ def get_salary_structures(
     ).all()
 
 
+# ============================================================
+# REVISE SALARY STRUCTURE
+# ============================================================
+
 @router.post(
     "/{salary_structure_id}/revise",
     response_model=SalaryStructureResponse,
@@ -89,11 +132,23 @@ def revise_salary_structure(
     salary_structure_id: int,
     salary_data: SalaryStructureCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("Admin", "HR"))
+    current_user: User = Depends(
+        require_role(
+            "Admin",
+            "HR",
+            "Payroll Manager"
+        )
+    )
 ):
+    # --------------------------------------------------------
+    # 1. Find current salary structure
+    # --------------------------------------------------------
+
     current_salary = (
         db.query(SalaryStructure)
-        .filter(SalaryStructure.id == salary_structure_id)
+        .filter(
+            SalaryStructure.id == salary_structure_id
+        )
         .first()
     )
 
@@ -103,11 +158,25 @@ def revise_salary_structure(
             detail="Salary structure not found"
         )
 
-    if current_salary.employee_id != salary_data.employee_id:
+    # --------------------------------------------------------
+    # 2. Employee cannot change during revision
+    # --------------------------------------------------------
+
+    if (
+        current_salary.employee_id
+        != salary_data.employee_id
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Employee ID cannot be changed during salary revision"
+            detail=(
+                "Employee ID cannot be changed "
+                "during salary revision"
+            )
         )
+
+    # --------------------------------------------------------
+    # 3. Effective date validation
+    # --------------------------------------------------------
 
     if (
         salary_data.effective_from
@@ -115,10 +184,23 @@ def revise_salary_structure(
     ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="New effective date must be after the current effective date"
+            detail=(
+                "New effective date must be after "
+                "the current effective date"
+            )
         )
 
-    current_salary.effective_to = salary_data.effective_from
+    # --------------------------------------------------------
+    # 4. Close previous salary structure
+    # --------------------------------------------------------
+
+    current_salary.effective_to = (
+        salary_data.effective_from
+    )
+
+    # --------------------------------------------------------
+    # 5. Create new salary structure
+    # --------------------------------------------------------
 
     new_salary = SalaryStructure(
         employee_id=salary_data.employee_id,
@@ -131,7 +213,13 @@ def revise_salary_structure(
     )
 
     db.add(new_salary)
+
+    # Flush so new_salary.id is available
     db.flush()
+
+    # --------------------------------------------------------
+    # 6. Check salary increase alert
+    # --------------------------------------------------------
 
     salary_alert = check_salary_increase_alert(
         db=db,
@@ -140,28 +228,50 @@ def revise_salary_structure(
         current_salary_structure_id=new_salary.id,
     )
 
-    if salary_alert:
-        hr_admin_users = (
-        db.query(User)
-        .filter(
-            User.role.in_(["Admin", "HR"]),
-            User.is_active == True
-        )
-        .all()
-    )
+    # --------------------------------------------------------
+    # 7. Notify HR/Admin if threshold exceeded
+    # --------------------------------------------------------
 
-    for user in hr_admin_users:
-        create_notification(
-            db=db,
-            user_id=user.id,
-            title="Salary Increase Alert",
-            message=(
-                f"Employee {salary_data.employee_id} received a "
-                f"{salary_alert['increase_percentage']}% salary increase. "
-                f"Previous basic salary: ₹{salary_alert['previous_salary']}. "
-                f"New basic salary: ₹{salary_alert['new_salary']}."
-            ),
+    if salary_alert:
+
+        hr_admin_users = (
+            db.query(User)
+            .filter(
+                User.role.in_(["Admin", "HR"]),
+                User.is_active == True
+            )
+            .all()
         )
+
+        for user in hr_admin_users:
+
+            create_notification(
+                db=db,
+                user_id=user.id,
+                title="Salary Increase Alert",
+                message=(
+                    f"Employee "
+                    f"{salary_data.employee_id} "
+                    f"received a "
+                    f"{salary_alert['increase_percentage']}% "
+                    f"salary increase. "
+                    f"Previous basic salary: ₹"
+                    f"{salary_alert['previous_salary']}. "
+                    f"New basic salary: ₹"
+                    f"{salary_alert['new_salary']}. "
+                    f"Alert threshold: "
+                    f"{salary_alert['threshold']}%."
+                ),
+                notification_key=(
+                    f"salary_increase_"
+                    f"{new_salary.id}_"
+                    f"user_{user.id}"
+                ),
+            )
+
+    # --------------------------------------------------------
+    # 8. Commit salary + notifications together
+    # --------------------------------------------------------
 
     db.commit()
     db.refresh(new_salary)
