@@ -21,7 +21,13 @@ def import_attendance_csv(
     db: Session,
     file_content: str,
 ):
-    reader = csv.DictReader(StringIO(file_content))
+    # Handle UTF-8 BOM and Windows line endings safely
+    file_content = file_content.lstrip("\ufeff")
+
+    reader = csv.DictReader(
+        StringIO(file_content),
+        skipinitialspace=True,
+    )
 
     required_columns = {
         "employee_id",
@@ -38,14 +44,20 @@ def import_attendance_csv(
             "errors": [],
         }
 
+    # Normalize headers
+    reader.fieldnames = [
+        (column or "").strip().lstrip("\ufeff")
+        for column in reader.fieldnames
+    ]
+
     missing_columns = required_columns - set(reader.fieldnames)
 
     if missing_columns:
         return {
             "success": False,
             "message": (
-                f"Missing columns: "
-                f"{', '.join(sorted(missing_columns))}"
+                "Missing columns: "
+                + ", ".join(sorted(missing_columns))
             ),
             "imported": 0,
             "errors": [],
@@ -56,11 +68,11 @@ def import_attendance_csv(
 
     for row_number, row in enumerate(reader, start=2):
 
-        employee_id = (
+        employee_id_raw = (
             row.get("employee_id") or ""
         ).strip()
 
-        attendance_date = (
+        attendance_date_raw = (
             row.get("attendance_date") or ""
         ).strip()
 
@@ -73,17 +85,17 @@ def import_attendance_csv(
         ).strip()
 
         # ----------------------------------------------------
-        # Validate employee ID
+        # Employee ID
         # ----------------------------------------------------
 
-        if not employee_id.isdigit():
+        if not employee_id_raw.isdigit():
             errors.append({
                 "row": row_number,
                 "error": "employee_id must be a valid number",
             })
             continue
 
-        employee_id = int(employee_id)
+        employee_id = int(employee_id_raw)
 
         employee = (
             db.query(Employee)
@@ -99,12 +111,12 @@ def import_attendance_csv(
             continue
 
         # ----------------------------------------------------
-        # Validate date
+        # Date
         # ----------------------------------------------------
 
         try:
             parsed_date = date.fromisoformat(
-                attendance_date
+                attendance_date_raw
             )
         except ValueError:
             errors.append({
@@ -117,7 +129,7 @@ def import_attendance_csv(
             continue
 
         # ----------------------------------------------------
-        # Validate status
+        # Status
         # ----------------------------------------------------
 
         if attendance_status not in VALID_STATUSES:
@@ -125,14 +137,14 @@ def import_attendance_csv(
                 "row": row_number,
                 "error": (
                     f"Invalid status '{attendance_status}'. "
-                    f"Allowed values: "
-                    f"{', '.join(sorted(VALID_STATUSES))}"
+                    "Allowed values: "
+                    + ", ".join(sorted(VALID_STATUSES))
                 ),
             })
             continue
 
         # ----------------------------------------------------
-        # Prevent duplicate attendance
+        # Duplicate check
         # ----------------------------------------------------
 
         existing = (
@@ -150,7 +162,7 @@ def import_attendance_csv(
                 "error": (
                     f"Attendance already exists for "
                     f"employee {employee_id} on "
-                    f"{attendance_date}"
+                    f"{attendance_date_raw}"
                 ),
             })
             continue
@@ -165,7 +177,7 @@ def import_attendance_csv(
         )
 
     # --------------------------------------------------------
-    # Insert valid records
+    # Insert
     # --------------------------------------------------------
 
     try:
