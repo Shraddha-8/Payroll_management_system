@@ -6,17 +6,24 @@ from app.dependencies.roles import require_role
 from app.models.employee import Employee
 from app.models.leave_request import LeaveRequest
 from app.models.user import User
+from app.services.notification import create_notification
+
 from app.schemas.leave import (
     LeaveRequestCreate,
     LeaveRequestUpdate,
     LeaveRequestResponse,
 )
 
+
 router = APIRouter(
     prefix="/leave-requests",
     tags=["Leave Requests"]
 )
 
+
+# ============================================================
+# CREATE LEAVE REQUEST
+# ============================================================
 
 @router.post(
     "/",
@@ -26,7 +33,9 @@ router = APIRouter(
 def create_leave_request(
     leave_data: LeaveRequestCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("Admin", "HR", "Employee"))
+    current_user: User = Depends(
+        require_role("Admin", "HR", "Employee")
+    )
 ):
     employee = (
         db.query(Employee)
@@ -55,11 +64,54 @@ def create_leave_request(
     )
 
     db.add(leave_request)
+
+    # Flush so leave_request.id is available for notification key
+    db.flush()
+
+    # --------------------------------------------------------
+    # Notify active Admin and HR users
+    # --------------------------------------------------------
+
+    approver_users = (
+        db.query(User)
+        .filter(
+            User.role.in_(["Admin", "HR"]),
+            User.is_active == True,
+            User.id != current_user.id
+        )
+        .all()
+    )
+
+    employee_name = employee.name
+    employee_email = employee.email
+
+    for user in approver_users:
+        create_notification(
+            db=db,
+            user_id=user.id,
+            title="New Leave Request",
+            message=(
+                f"{employee_name} ({employee_email}) "
+                f"submitted a leave request from "
+                f"{leave_request.start_date} to "
+                f"{leave_request.end_date}. "
+                f"Reason: {leave_request.reason}"
+            ),
+            notification_key=(
+                f"leave_{leave_request.id}"
+                f"_submitted_user_{user.id}"
+            ),
+        )
+
     db.commit()
     db.refresh(leave_request)
 
     return leave_request
 
+
+# ============================================================
+# GET LEAVE REQUESTS
+# ============================================================
 
 @router.get(
     "/",
@@ -69,7 +121,9 @@ def get_leave_requests(
     employee_id: int | None = None,
     request_status: str | None = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("Admin", "HR", "Employee"))
+    current_user: User = Depends(
+        require_role("Admin", "HR", "Employee")
+    )
 ):
     query = db.query(LeaveRequest)
 
@@ -88,6 +142,10 @@ def get_leave_requests(
     ).all()
 
 
+# ============================================================
+# UPDATE LEAVE REQUEST
+# ============================================================
+
 @router.put(
     "/{leave_request_id}",
     response_model=LeaveRequestResponse
@@ -96,7 +154,9 @@ def update_leave_request(
     leave_request_id: int,
     leave_data: LeaveRequestUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("Admin", "HR", "Employee"))
+    current_user: User = Depends(
+        require_role("Admin", "HR", "Employee")
+    )
 ):
     leave_request = (
         db.query(LeaveRequest)
@@ -143,6 +203,12 @@ def update_leave_request(
     db.refresh(leave_request)
 
     return leave_request
+
+
+# ============================================================
+# APPROVE / REJECT LEAVE REQUEST
+# ============================================================
+
 @router.patch(
     "/{leave_request_id}/decision",
     response_model=LeaveRequestResponse
@@ -158,7 +224,9 @@ def decide_leave_request(
 ):
     leave_request = (
         db.query(LeaveRequest)
-        .filter(LeaveRequest.id == leave_request_id)
+        .filter(
+            LeaveRequest.id == leave_request_id
+        )
         .first()
     )
 
@@ -171,7 +239,10 @@ def decide_leave_request(
     if leave_request.status != "Pending":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only pending leave requests can be approved or rejected"
+            detail=(
+                "Only pending leave requests can be "
+                "approved or rejected"
+            )
         )
 
     if decision not in ["Approved", "Rejected"]:
@@ -192,6 +263,57 @@ def decide_leave_request(
         leave_request.rejection_reason = rejection_reason
     else:
         leave_request.rejection_reason = None
+
+    # --------------------------------------------------------
+    # Find employee
+    # --------------------------------------------------------
+
+    employee = (
+        db.query(Employee)
+        .filter(
+            Employee.id == leave_request.employee_id
+        )
+        .first()
+    )
+
+    # --------------------------------------------------------
+    # Notify employee about decision
+    # --------------------------------------------------------
+
+    if employee and employee.user_id:
+
+        if decision == "Approved":
+            title = "Leave request approved"
+
+            message = (
+                f"Your leave request from "
+                f"{leave_request.start_date} to "
+                f"{leave_request.end_date} "
+                f"has been approved."
+            )
+
+        else:
+            title = "Leave request rejected"
+
+            message = (
+                f"Your leave request from "
+                f"{leave_request.start_date} to "
+                f"{leave_request.end_date} "
+                f"has been rejected. "
+                f"Reason: {rejection_reason}"
+            )
+
+        create_notification(
+            db=db,
+            user_id=employee.user_id,
+            title=title,
+            message=message,
+            notification_key=(
+                f"leave-decision-"
+                f"{leave_request.id}-"
+                f"{decision.lower()}"
+            ),
+        )
 
     db.commit()
     db.refresh(leave_request)
