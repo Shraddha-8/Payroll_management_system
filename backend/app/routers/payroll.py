@@ -281,6 +281,18 @@ def submit_payroll(
     payroll.status = "Pending Approval"
 
     # --------------------------------------------------------
+    # Find employee details for notification
+    # --------------------------------------------------------
+
+    employee = (
+        db.query(Employee)
+        .filter(
+            Employee.id == payroll.employee_id
+        )
+        .first()
+    )
+
+    # --------------------------------------------------------
     # Notify active approvers
     # --------------------------------------------------------
 
@@ -296,22 +308,23 @@ def submit_payroll(
         .all()
     )
 
-    for user in approver_users:
-        create_notification(
-            db=db,
-            user_id=user.id,
-            title="Payroll Pending Approval",
-            message=(
-                f"Payroll for employee "
-                f"{payroll.employee_id} "
-                f"for {payroll.payroll_month} "
-                f"is pending approval."
-            ),
-            notification_key=(
-                f"payroll_{payroll.id}"
-                f"_pending_approval_user_{user.id}"
-            ),
-        )
+    if employee:
+        for user in approver_users:
+            create_notification(
+                db=db,
+                user_id=user.id,
+                title="Payroll Pending Approval",
+                message=(
+                    f"Payroll for "
+                    f"{employee.name} ({employee.email}) "
+                    f"for {payroll.payroll_month} "
+                    f"is pending approval."
+                ),
+                notification_key=(
+                    f"payroll-{payroll.id}"
+                    f"-pending-approval-{user.id}"
+                ),
+            )
 
     # --------------------------------------------------------
     # Audit log
@@ -412,6 +425,7 @@ def decide_payroll(
         action = "APPROVE"
         details = "Payroll approved"
 
+        # Notify employee
         if employee and employee.user_id:
             create_notification(
                 db=db,
@@ -437,6 +451,7 @@ def decide_payroll(
             f"Reason: {rejection_reason}"
         )
 
+        # Notify employee
         if employee and employee.user_id:
             create_notification(
                 db=db,
@@ -578,12 +593,22 @@ def finalize_payroll(
         )
 
         for user in hr_admin_users:
+
+            if employee:
+                employee_display = (
+                    f"{employee.name} ({employee.email})"
+                )
+            else:
+                employee_display = (
+                    f"Employee ID {payroll.employee_id}"
+                )
+
             create_notification(
                 db=db,
                 user_id=user.id,
                 title="Payroll Change Alert",
                 message=(
-                    f"Employee {payroll.employee_id} has a "
+                    f"{employee_display} has a "
                     f"{payroll_alert['change_percentage']}% "
                     f"change in net salary compared with "
                     f"the previous finalized payroll."
