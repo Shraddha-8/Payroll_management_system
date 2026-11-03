@@ -16,24 +16,55 @@ function LeaveForm({ leave, fixedEmployeeId, employees, onClose, onSaved }) {
   const [busy, setBusy] = useState(false)
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
   const submit = async (e) => {
-    e.preventDefault()
-    if (busy) return
-    const v = {}
-    if (!f.employee_id) v.employee_id = 'Employee is required'
-    if (!f.start_date) v.start_date = 'Start date is required'
-    if (!f.end_date) v.end_date = 'End date is required'
-    else if (f.start_date && f.end_date < f.start_date) v.end_date = 'End date cannot be before start date'
-    if (!f.reason.trim()) v.reason = 'Reason is required'
-    setErrs(v)
-    if (Object.keys(v).length) return
-    setBusy(true); setServerErr('')
-    try {
-      if (leave) await leaveService.update(leave.id, { start_date: f.start_date, end_date: f.end_date, reason: f.reason.trim() })
-      else await leaveService.create({ employee_id: Number(f.employee_id), start_date: f.start_date, end_date: f.end_date, reason: f.reason.trim() })
-      toast.success(leave ? 'Leave request updated' : 'Leave request submitted')
-      onSaved()
-    } catch (err) { setServerErr(errorMessage(err)) } finally { setBusy(false) }
+  e.preventDefault()
+  if (busy) return
+
+  const v = {}
+  if (!f.employee_id) v.employee_id = 'Employee is required'
+  if (!f.start_date) v.start_date = 'Start date is required'
+  if (!f.end_date) v.end_date = 'End date is required'
+  else if (f.start_date && f.end_date < f.start_date) v.end_date = 'End date cannot be before start date'
+  if (!f.reason.trim()) v.reason = 'Reason is required'
+
+  setErrs(v)
+  if (Object.keys(v).length) return
+
+  // Ask for confirmation only when submitting a new leave request
+  if (!leave) {
+    const confirmed = window.confirm(
+      `Are you sure you want to submit this leave request?\n\nFrom: ${f.start_date}\nTo: ${f.end_date}\nReason: ${f.reason.trim()}`
+    )
+
+    if (!confirmed) return
   }
+
+  setBusy(true)
+  setServerErr('')
+
+  try {
+    if (leave) {
+      await leaveService.update(leave.id, {
+        start_date: f.start_date,
+        end_date: f.end_date,
+        reason: f.reason.trim(),
+      })
+    } else {
+      await leaveService.create({
+        employee_id: Number(f.employee_id),
+        start_date: f.start_date,
+        end_date: f.end_date,
+        reason: f.reason.trim(),
+      })
+    }
+
+    toast.success(leave ? 'Leave request updated' : 'Leave request submitted')
+    onSaved()
+  } catch (err) {
+    setServerErr(errorMessage(err))
+  } finally {
+    setBusy(false)
+  }
+}
   return (
     <Modal title={leave ? 'Edit leave request' : 'New leave request'} onClose={onClose}
       footer={<><Button variant="secondary" onClick={onClose} disabled={busy}>Cancel</Button><Button loading={busy} onClick={submit}>{leave ? 'Save' : 'Submit request'}</Button></>}>
@@ -43,7 +74,14 @@ function LeaveForm({ leave, fixedEmployeeId, employees, onClose, onSaved }) {
           <select value={f.employee_id} onChange={set('employee_id')} disabled={!!leave}><option value="">Select employee…</option>
             {employees.filter((x) => x.is_active).map((x) => <option key={x.id} value={x.id}>{x.name} ({x.employee_id})</option>)}</select></FormField>}
         <div className="form-grid"><FormField label="Start date" required error={errs.start_date}><input type="date" value={f.start_date} onChange={set('start_date')} /></FormField>
-          <FormField label="End date" required error={errs.end_date}><input type="date" value={f.end_date} onChange={set('end_date')} /></FormField></div>
+          <FormField label="End date" required error={errs.end_date}>
+  <input
+    type="date"
+    value={f.end_date}
+    min={f.start_date || undefined}
+    onChange={set('end_date')}
+  />
+</FormField></div>
         <FormField label="Reason" required error={errs.reason}><textarea rows={3} maxLength={500} value={f.reason} onChange={set('reason')} /></FormField>
         <button type="submit" hidden />
       </form>

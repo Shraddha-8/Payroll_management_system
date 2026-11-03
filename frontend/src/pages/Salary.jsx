@@ -82,7 +82,7 @@ export default function Salary() {
   return (
     <>
       <PageHeader title="Salary structures" subtitle="Create structures and record revisions" actions={<Button onClick={() => setForm({})}>+ New structure</Button>} />
-      {!emps.allowed && <div style={{ marginBottom: 16 }}><Alert tone="info">Employee names are only available to HR/Admin; employees are shown by numeric ID.</Alert></div>}
+      {!emps.allowed && <div style={{ marginBottom: 16 }}></div>}
       <Card pad={false}>
         <div className="toolbar">
           {emps.allowed

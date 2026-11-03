@@ -16,11 +16,8 @@ export default function Admin() {
             <SummaryCard icon="check" tone="green" label="API health" value={q.data.health.status} />
             <SummaryCard icon="shield" label="Admin access" value="Granted" hint={q.data.access.user} />
           </div>)}
-        <Card title="Not available in the backend"><ul style={{ margin: 0, paddingLeft: 18 }}>
-          <li>User management (create/deactivate users, assign roles) — only the <code>create_admin.py</code> script exists.</li>
-          <li>Linking a login to an employee record (<code>employees.user_id</code>) — no endpoint.</li>
-          <li>Payroll correction, payroll preview, attendance register and password change.</li></ul></Card>
-        <Alert tone="info">Audit logs are under <b>Audit Logs</b> in the sidebar.</Alert>
+       
+        
       </div>
     </>
   )
