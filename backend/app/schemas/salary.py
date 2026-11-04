@@ -1,3 +1,4 @@
+
 from datetime import date
 from decimal import Decimal
 
@@ -10,28 +11,28 @@ class SalaryStructureBase(BaseModel):
     basic_salary: Decimal = Field(
         ge=0,
         decimal_places=2,
-        max_digits=12
+        max_digits=12,
     )
 
     allowances: Decimal = Field(
         default=Decimal("0.00"),
         ge=0,
         decimal_places=2,
-        max_digits=12
+        max_digits=12,
     )
 
     bonuses: Decimal = Field(
         default=Decimal("0.00"),
         ge=0,
         decimal_places=2,
-        max_digits=12
+        max_digits=12,
     )
 
     deductions: Decimal = Field(
         default=Decimal("0.00"),
         ge=0,
         decimal_places=2,
-        max_digits=12
+        max_digits=12,
     )
 
     effective_from: date
@@ -47,28 +48,28 @@ class SalaryStructureUpdate(BaseModel):
         default=None,
         ge=0,
         decimal_places=2,
-        max_digits=12
+        max_digits=12,
     )
 
     allowances: Decimal | None = Field(
         default=None,
         ge=0,
         decimal_places=2,
-        max_digits=12
+        max_digits=12,
     )
 
     bonuses: Decimal | None = Field(
         default=None,
         ge=0,
         decimal_places=2,
-        max_digits=12
+        max_digits=12,
     )
 
     deductions: Decimal | None = Field(
         default=None,
         ge=0,
         decimal_places=2,
-        max_digits=12
+        max_digits=12,
     )
 
     effective_from: date | None = None
@@ -77,5 +78,10 @@ class SalaryStructureUpdate(BaseModel):
 
 class SalaryStructureResponse(SalaryStructureBase):
     id: int
+
+    # Additional employee information.
+    employee_name: str | None = None
+    employee_code: str | None = None
+    employee_department: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
