@@ -24,8 +24,32 @@ def get_audit_logs(
         require_role("Admin", "HR")
     )
 ):
-    return (
-        db.query(AuditLog)
+    audit_records = (
+        db.query(AuditLog, User)
+        .outerjoin(
+            User,
+            AuditLog.user_id == User.id
+        )
         .order_by(AuditLog.id.desc())
         .all()
     )
+
+    results = []
+
+    for audit, user in audit_records:
+        results.append({
+            "id": audit.id,
+            "user_id": audit.user_id,
+
+            "user_name": user.name if user else None,
+            "user_email": user.email if user else None,
+            "user_role": user.role if user else None,
+
+            "action": audit.action,
+            "entity_type": audit.entity_type,
+            "entity_id": audit.entity_id,
+            "details": audit.details,
+            "created_at": audit.created_at,
+        })
+
+    return results
